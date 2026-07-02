@@ -7,9 +7,11 @@ Alerts appear in the in-app feed only. Not investment advice.
 """
 
 import datetime as dt
+from io import StringIO
 
 import numpy as np
 import pandas as pd
+import requests
 import streamlit as st
 import yfinance as yf
 
@@ -17,12 +19,21 @@ st.set_page_config(page_title="Stock Alert Scanner", page_icon="📡", layout="w
 
 # ----------------------------- universe ------------------------------------
 
+_UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+
+
+def _wiki_tables(url: str) -> list[pd.DataFrame]:
+    """Wikipedia blocks default python user-agents; fetch like a browser."""
+    resp = requests.get(url, headers=_UA, timeout=30)
+    resp.raise_for_status()
+    return pd.read_html(StringIO(resp.text))
+
 
 @st.cache_data(ttl=24 * 3600)
 def get_sp500_tickers() -> list[str]:
     """S&P 500 universe scraped from Wikipedia. Falls back to a core list."""
     try:
-        tables = pd.read_html(
+        tables = _wiki_tables(
             "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
         )
         ticks = tables[0]["Symbol"].str.replace(".", "-", regex=False).tolist()
@@ -42,7 +53,7 @@ def get_sp500_tickers() -> list[str]:
 def get_nasdaq100_tickers() -> list[str]:
     """Nasdaq-100 universe scraped from Wikipedia."""
     try:
-        tables = pd.read_html("https://en.wikipedia.org/wiki/Nasdaq-100")
+        tables = _wiki_tables("https://en.wikipedia.org/wiki/Nasdaq-100")
         for tbl in tables:
             for col in ("Ticker", "Symbol"):
                 if col in tbl.columns and len(tbl) > 80:
@@ -56,7 +67,7 @@ def get_nasdaq100_tickers() -> list[str]:
 def get_smallcap_tickers() -> list[str]:
     """S&P 600 small-cap universe scraped from Wikipedia."""
     try:
-        tables = pd.read_html(
+        tables = _wiki_tables(
             "https://en.wikipedia.org/wiki/List_of_S%26P_600_companies"
         )
         for tbl in tables:
@@ -228,6 +239,64 @@ st.caption(
     "Detects unusual moves (Layer 1), confirms with technical indicators (Layer 2), "
     "and scores them 1–10. Informational only — **not investment advice**."
 )
+
+with st.expander("📖 How to use"):
+    st.markdown(
+        """
+**What this app does.** It scans a group of stocks for *unusual activity* (Layer 1),
+then checks whether technical indicators back it up (Layer 2). Anything that passes
+both layers shows up in the alert feed with a score from 1–10 — higher means more
+signals agree. It does **not** predict prices; it flags situations worth a closer look.
+
+---
+
+#### Sidebar settings
+
+**Universe** — which stocks get scanned:
+- **S&P 500** — the 500 largest US companies. Good default.
+- **Nasdaq-100** — 100 largest Nasdaq stocks, tech-heavy, more volatile.
+- **S&P 500 + Nasdaq-100** — both combined (~570 tickers), the widest scan.
+- **Small caps $5–20** — S&P 600 small-cap index, only showing stocks priced
+  between $5 and $20. Bigger % swings, but riskier and less liquid.
+- **My watchlist** — type your own tickers in the box below it, separated by
+  commas (e.g. `AAPL, PLTR, BTC-USD`). Anything Yahoo Finance knows works.
+
+**Minimum alert score** — hides alerts scoring below this. At 5 you'll see solid
+setups; raise it to 7–8 to only see alerts where several signals agree; lower it
+to see everything that triggered.
+
+**Direction** — *Bullish only* shows stocks moving up, *Bearish only* shows stocks
+moving down, *Both* shows everything.
+
+#### Trigger sensitivity (what fires an alert)
+
+- **Volume z-score ≥** — how unusual today's trading volume must be vs. the last
+  20 days, in standard deviations. 3.0 = very unusual (default). Lower = more,
+  noisier alerts.
+- **Move vs ATR ≥ ×** — how big today's price move must be compared to the stock's
+  *own typical* daily range (ATR). 2.5× means a move 2.5 times bigger than normal
+  for that stock — so a quiet stock jumping 2% can trigger while a volatile one
+  moving 2% won't.
+- **Gap open ≥ %** — alerts when a stock opens this % above/below yesterday's
+  close, which usually means overnight news.
+
+#### Reading an alert
+
+- **Triggers** — the unusual activity that fired (Layer 1).
+- **Confirmation** — the indicator context (Layer 2): **RSI** below 30 = potentially
+  oversold, above 70 = potentially overextended; price above the **200-day moving
+  average** = long-term uptrend; a **MACD cross** = momentum just shifted.
+- **Score** — 2 points per trigger plus points for each confirming indicator,
+  capped at 10.
+
+Results are cached for 30 minutes — rerunning within that window is instant.
+Data is end-of-day from Yahoo Finance, so this is a daily-decision tool, not a
+day-trading feed.
+
+*Everything here is information, not a recommendation. Always do your own research
+before investing.*
+"""
+    )
 
 with st.sidebar:
     st.header("Settings")
