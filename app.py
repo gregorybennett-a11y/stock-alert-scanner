@@ -38,6 +38,35 @@ def get_sp500_tickers() -> list[str]:
     ]
 
 
+@st.cache_data(ttl=24 * 3600)
+def get_nasdaq100_tickers() -> list[str]:
+    """Nasdaq-100 universe scraped from Wikipedia."""
+    try:
+        tables = pd.read_html("https://en.wikipedia.org/wiki/Nasdaq-100")
+        for tbl in tables:
+            for col in ("Ticker", "Symbol"):
+                if col in tbl.columns and len(tbl) > 80:
+                    return tbl[col].str.replace(".", "-", regex=False).tolist()
+    except Exception:
+        pass
+    return []
+
+
+@st.cache_data(ttl=24 * 3600)
+def get_smallcap_tickers() -> list[str]:
+    """S&P 600 small-cap universe scraped from Wikipedia."""
+    try:
+        tables = pd.read_html(
+            "https://en.wikipedia.org/wiki/List_of_S%26P_600_companies"
+        )
+        for tbl in tables:
+            if "Symbol" in tbl.columns and len(tbl) > 400:
+                return tbl["Symbol"].str.replace(".", "-", regex=False).tolist()
+    except Exception:
+        pass
+    return []
+
+
 # ----------------------------- indicators ----------------------------------
 
 
@@ -203,12 +232,20 @@ st.caption(
 with st.sidebar:
     st.header("Settings")
     universe = st.radio(
-        "Universe", ["S&P 500", "My watchlist"], help="Watchlist = your own tickers"
+        "Universe",
+        [
+            "S&P 500",
+            "Nasdaq-100",
+            "S&P 500 + Nasdaq-100",
+            "Small caps $5–20",
+            "My watchlist",
+        ],
+        help="Small caps = S&P 600, filtered to stocks priced $5–20",
     )
     watchlist_txt = st.text_area(
         "Watchlist tickers (comma-separated)",
         "AAPL, NVDA, TSLA, AMD, PLTR",
-        disabled=(universe == "S&P 500"),
+        disabled=(universe != "My watchlist"),
     )
     min_score = st.slider("Minimum alert score", 1, 10, 5)
     direction_filter = st.selectbox("Direction", ["Both", "Bullish only", "Bearish only"])
@@ -221,14 +258,26 @@ with st.sidebar:
     st.divider()
     st.caption("🔕 Notifications: in-app feed only (email/push opt-in comes later).")
 
+price_range = None  # (min, max) filter applied to results
 if universe == "S&P 500":
     tickers = tuple(get_sp500_tickers())
+elif universe == "Nasdaq-100":
+    tickers = tuple(get_nasdaq100_tickers())
+elif universe == "S&P 500 + Nasdaq-100":
+    tickers = tuple(dict.fromkeys(get_sp500_tickers() + get_nasdaq100_tickers()))
+elif universe == "Small caps $5–20":
+    tickers = tuple(get_smallcap_tickers())
+    price_range = (5.0, 20.0)
 else:
     tickers = tuple(
         t.strip().upper().replace(".", "-")
         for t in watchlist_txt.split(",")
         if t.strip()
     )
+
+if not tickers:
+    st.error("Couldn't load the ticker list for this universe — try another one.")
+    st.stop()
 
 col1, col2 = st.columns([1, 3])
 with col1:
@@ -251,6 +300,10 @@ if scan_clicked or "last_scan" in st.session_state:
         st.info("No unusual activity found with current settings. Try lowering the trigger sensitivity.")
     else:
         filtered = results[results["Score"] >= min_score]
+        if price_range:
+            filtered = filtered[
+                filtered["Price"].between(price_range[0], price_range[1])
+            ]
         if direction_filter != "Both":
             want = "bullish" if direction_filter == "Bullish only" else "bearish"
             filtered = filtered[filtered["Direction"] == want]
